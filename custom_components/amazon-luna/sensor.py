@@ -2,7 +2,6 @@ import logging
 import aiohttp
 from bs4 import BeautifulSoup
 from datetime import timedelta
-import re
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -15,51 +14,52 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     async def async_get_data():
         try:
+            # Amazon checks User-Agents strictly. This mimics a modern Chrome browser.
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             }
             async with aiohttp.ClientSession() as session:
-                async with session.get(SOURCE_URL, headers=headers, timeout=15) as response:
+                async with session.get(SOURCE_URL, headers=headers, timeout=20) as response:
+                    if response.status != 200:
+                        raise UpdateFailed(f"Amazon returned status {response.status}")
+                    
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
                     found_games = []
 
-                    # 1. Target the main article body
-                    content = soup.find('div', class_='entry-content') or soup
-                    
-                    # 2. Extract every string on the page and filter for games
-                    # Most game titles are in <li> or <strong> tags this month
-                    potential_elements = content.find_all(['li', 'strong', 'td'])
-                    
-                    for element in potential_elements:
-                        text = element.get_text().strip()
+                    # STRATEGY: Amazon uses 'aria-label' for their claim buttons.
+                    # We look for any element that has an aria-label containing 'Claim'
+                    for el in soup.find_all(attrs={"aria-label": True}):
+                        label = el['aria-label']
                         
-                        # Filtering Logic: Look for markers like 'Jan', 'Feb', or 'Luna'
-                        # while avoiding generic menu items
-                        if (len(text) > 3 and len(text) < 50 and 
-                            not any(x in text.lower() for x in ["click", "follow", "share", "comment"])):
+                        if "Claim " in label:
+                            # Extract game name: "Claim Fallout 3" -> "Fallout 3"
+                            game_title = label.replace("Claim ", "").strip()
                             
-                            # Clean the title (remove bullets, dates, and extra metadata)
-                            clean_title = re.split(r'–| - |\.| on ', text)[0].replace("•", "").strip()
-                            
-                            if len(clean_title) > 2:
+                            if 2 < len(game_title) < 60:
                                 found_games.append({
-                                    "title": clean_title,
+                                    "title": game_title,
                                     "image": "https://luna.amazon.com/favicon.ico"
                                 })
 
-                    # Deduplicate the list
-                    unique_games = []
-                    seen = set()
-                    for g in found_games:
-                        if g['title'] not in seen:
-                            unique_games.append(g)
-                            seen.add(g['title'])
-                    
+                    # FALLBACK: If labels fail, look for specific text patterns
+                    if not found_games:
+                        for span in soup.find_all('span'):
+                            text = span.get_text().strip()
+                            # Look for capitalized titles that aren't UI buttons
+                            if 3 < len(text) < 40 and text[0].isupper():
+                                if text not in ["Home", "Settings", "Library", "Play", "Sign In"]:
+                                    found_games.append({"title": text, "image": "https://luna.amazon.com/favicon.ico"})
+
+                    # Deduplicate
+                    unique_games = list({v['title']:v for v in found_games}.values())
+                    _LOGGER.debug("Luna Scraper found %s games", len(unique_games))
                     return unique_games
 
         except Exception as e:
-            raise UpdateFailed(f"Scraper error: {e}")
+            _LOGGER.error("Luna Scraper Error: %s", e)
+            raise UpdateFailed(f"Error fetching Luna data: {e}")
 
     coordinator = DataUpdateCoordinator(
         hass,
@@ -76,7 +76,7 @@ class LunaGamesSensor(SensorEntity):
     def __init__(self, coordinator):
         self.coordinator = coordinator
         self._attr_name = "Amazon Luna Free Games"
-        self._attr_unique_id = "amazon_luna_free_games_v4"
+        self._attr_unique_id = "amazon_luna_claims_v5"
 
     @property
     def native_value(self):
@@ -88,4 +88,11 @@ class LunaGamesSensor(SensorEntity):
 
     @property
     def icon(self):
-        return "mdi:controller-classic"
+        return "mdi:amazon-alexa"
+
+    @property
+    def should_poll(self):
+        return False
+
+    async def async_added_to_hass(self):
+        self.async_on_remove(self.coordinator.async_add_listener(self.async_write_ha_state))
