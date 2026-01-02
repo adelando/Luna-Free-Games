@@ -1,0 +1,10 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Amazon Luna Setup",
+        "description": "Click Submit to start tracking free Amazon Luna Prime games. No login or API key is required."
+      }
+    }
+  }
+}
