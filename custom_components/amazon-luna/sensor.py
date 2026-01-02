@@ -1,5 +1,6 @@
 import logging
 import aiohttp
+import re
 from bs4 import BeautifulSoup
 from datetime import timedelta
 
@@ -14,59 +15,55 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     async def async_get_data():
         try:
-            # We use an updated User-Agent to ensure we aren't blocked by the server
+            # We use an even more detailed header to mimic a real Desktop Browser
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.google.com/"
             }
             async with aiohttp.ClientSession() as session:
-                async with session.get(SOURCE_URL, headers=headers, timeout=15) as response:
+                async with session.get(SOURCE_URL, headers=headers, timeout=20) as response:
                     if response.status != 200:
-                        raise UpdateFailed(f"Site returned {response.status}")
+                        _LOGGER.error("Luna site returned status: %s", response.status)
+                        return []
                     
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # Log the HTML length for debugging
+                    _LOGGER.debug("Luna Scraper: Received %s bytes of HTML", len(html))
+                    
                     found_games = []
 
-                    # 1. Target EVERYTHING that looks like a list item on the whole page
-                    # This is more robust if the container name changes
-                    items = soup.find_all('li')
-                    
-                    for item in items:
-                        text = item.get_text().strip()
+                    # STRATEGY: Look for ANY text block that contains "Release Date" or "Developer"
+                    # This finds them even if they aren't in <li> tags (e.g. inside <div> or <p>)
+                    potential_elements = soup.find_all(['li', 'p', 'div'], string=re.compile(r'Release Date|Developer|Publisher', re.I))
+
+                    for element in potential_elements:
+                        text = element.get_text().strip()
                         
-                        # 2. Logic: If it mentions 'Release Date' or 'Developer', it's a game entry
-                        if "Release Date" in text or "Developer" in text:
-                            # Split by common characters to isolate just the title
-                            # e.g., "Batman. Release Date: 2024" -> "Batman"
-                            for separator in ['.', '–', ' - ', ':']:
-                                if separator in text:
-                                    text = text.split(separator)[0]
-                                    break
-                            
-                            clean_title = text.replace("- ", "").strip()
-                            
-                            # Sanity check: titles shouldn't be massive or tiny
-                            if 2 < len(clean_title) < 70:
-                                found_games.append({
-                                    "title": clean_title,
-                                    "image": "https://luna.amazon.com/favicon.ico"
-                                })
+                        # Clean the text: Usually "Game Name. Release Date: ..."
+                        # We split by the first period or the word 'Release'
+                        parts = re.split(r'\. | Release| –', text)
+                        title = parts[0].replace("- ", "").strip()
 
-                    # 3. Deduplicate (remove duplicates)
-                    unique_list = []
-                    seen_titles = set()
-                    for game in found_games:
-                        if game['title'] not in seen_titles:
-                            unique_list.append(game)
-                            seen_titles.add(game['title'])
+                        if 3 < len(title) < 50:
+                            found_games.append({
+                                "title": title,
+                                "image": "https://luna.amazon.com/favicon.ico"
+                            })
 
-                    _LOGGER.debug("Scraper found %s games after filtering", len(unique_list))
+                    # DEDUPLICATE
+                    unique_list = list({v['title']:v for v in found_games}.values())
+                    
+                    if not unique_list:
+                        _LOGGER.warning("Luna Scraper: Page loaded but no games found. Website structure may have changed.")
+                    
                     return unique_list
 
         except Exception as e:
-            _LOGGER.error("Luna Scraper failed: %s", e)
-            raise UpdateFailed(f"Could not reach game source: {e}")
+            _LOGGER.error("Luna Scraper Critical Error: %s", e)
+            raise UpdateFailed(f"Error: {e}")
 
     coordinator = DataUpdateCoordinator(
         hass,
@@ -79,12 +76,11 @@ async def async_setup_entry(hass, entry, async_add_entities):
     await coordinator.async_config_entry_first_refresh()
     async_add_entities([LunaGamesSensor(coordinator)], True)
 
-
 class LunaGamesSensor(SensorEntity):
     def __init__(self, coordinator):
         self.coordinator = coordinator
         self._attr_name = "Amazon Luna Free Games"
-        self._attr_unique_id = "amazon_luna_free_games_list_v2"
+        self._attr_unique_id = "amazon_luna_free_games_list_v3" # New ID to force refresh
 
     @property
     def native_value(self):
