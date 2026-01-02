@@ -1,0 +1,10 @@
+type: markdown
+title: 🎮 Luna Free Games
+content: >
+  | Game Title |
+  | :--- |
+  {% for game in state_attr('sensor.amazon_luna_free_games', 'games') %}
+  | {{ game.title }} |
+  {% endfor %}
+footer: >
+  Total Games: {{ states('sensor.amazon_luna_free_games') }}
