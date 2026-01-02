@@ -2,48 +2,22 @@ import logging
 import aiohttp
 from bs4 import BeautifulSoup
 from datetime import timedelta
+
 from homeassistant.components.sensor import SensorEntity
-from .const import SOURCE_URL
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from .const import DOMAIN, SOURCE_URL
 
 _LOGGER = logging.getLogger(__name__)
-SCAN_INTERVAL = timedelta(hours=12)
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Set up the sensor platform."""
-    async_add_entities([LunaGamesSensor()], True)
-
-class LunaGamesSensor(SensorEntity):
-    def __init__(self):
-        self._attr_name = "Amazon Luna Free Games"
-        self._attr_unique_id = "amazon_luna_free_games_list"
-        self._state = 0
-        self._games = []
-
-    @property
-    def native_value(self):
-        return self._state
-
-    @property
-    def extra_state_attributes(self):
-        return {"games": self._games}
-
-    @property
-    def icon(self):
-        return "mdi:controller-classic"
-
-    async def async_update(self):
-        """Fetch data from the source."""
+async def async_setup_entry(hass, entry, async_add_entities):
+    """Set up the sensor platform via Config Flow."""
+    
+    async def async_get_data():
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(SOURCE_URL, timeout=10) as response:
-                    if response.status != 200:
-                        _LOGGER.error("Failed to fetch Luna games")
-                        return
-                    
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Targeting the specific list structure on Cloud Dosage
                     game_elements = soup.select("ul.wp-block-list li")
                     
                     found_games = []
@@ -52,12 +26,45 @@ class LunaGamesSensor(SensorEntity):
                         if title:
                             found_games.append({
                                 "title": title,
-                                "image": "https://luna.amazon.com/favicon.ico" # Generic icon
+                                "image": "https://luna.amazon.com/favicon.ico"
                             })
-
-                    self._games = found_games
-                    self._state = len(found_games)
-                    
+                    return found_games
         except Exception as e:
-            _LOGGER.error("Error updating Luna games: %s", e)
-n
+            raise UpdateFailed(f"Error communicating with Luna source: {e}")
+
+    # Coordinator manages updates for us automatically
+    coordinator = DataUpdateCoordinator(
+        hass,
+        _LOGGER,
+        name="Luna Games",
+        update_method=async_get_data,
+        update_interval=timedelta(hours=12),
+    )
+
+    await coordinator.async_config_entry_first_refresh()
+    async_add_entities([LunaGamesSensor(coordinator)], True)
+
+class LunaGamesSensor(SensorEntity):
+    def __init__(self, coordinator):
+        self.coordinator = coordinator
+        self._attr_name = "Amazon Luna Free Games"
+        self._attr_unique_id = "amazon_luna_free_games_list"
+
+    @property
+    def native_value(self):
+        return len(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self):
+        return {"games": self.coordinator.data}
+
+    @property
+    def icon(self):
+        return "mdi:controller-classic"
+
+    @property
+    def should_poll(self):
+        return False
+
+    async def async_added_to_hash(self):
+        self.async_on_remove(self.coordinator.async_add_listener(self.async_write_ha_state))
