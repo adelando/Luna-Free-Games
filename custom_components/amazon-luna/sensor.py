@@ -1,8 +1,8 @@
 import logging
 import aiohttp
-import re
 from bs4 import BeautifulSoup
 from datetime import timedelta
+import re
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -15,55 +15,51 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     async def async_get_data():
         try:
-            # We use an even more detailed header to mimic a real Desktop Browser
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://www.google.com/"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
             async with aiohttp.ClientSession() as session:
-                async with session.get(SOURCE_URL, headers=headers, timeout=20) as response:
-                    if response.status != 200:
-                        _LOGGER.error("Luna site returned status: %s", response.status)
-                        return []
-                    
+                async with session.get(SOURCE_URL, headers=headers, timeout=15) as response:
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Log the HTML length for debugging
-                    _LOGGER.debug("Luna Scraper: Received %s bytes of HTML", len(html))
-                    
                     found_games = []
 
-                    # STRATEGY: Look for ANY text block that contains "Release Date" or "Developer"
-                    # This finds them even if they aren't in <li> tags (e.g. inside <div> or <p>)
-                    potential_elements = soup.find_all(['li', 'p', 'div'], string=re.compile(r'Release Date|Developer|Publisher', re.I))
-
+                    # 1. Target the main article body
+                    content = soup.find('div', class_='entry-content') or soup
+                    
+                    # 2. Extract every string on the page and filter for games
+                    # Most game titles are in <li> or <strong> tags this month
+                    potential_elements = content.find_all(['li', 'strong', 'td'])
+                    
                     for element in potential_elements:
                         text = element.get_text().strip()
                         
-                        # Clean the text: Usually "Game Name. Release Date: ..."
-                        # We split by the first period or the word 'Release'
-                        parts = re.split(r'\. | Release| –', text)
-                        title = parts[0].replace("- ", "").strip()
+                        # Filtering Logic: Look for markers like 'Jan', 'Feb', or 'Luna'
+                        # while avoiding generic menu items
+                        if (len(text) > 3 and len(text) < 50 and 
+                            not any(x in text.lower() for x in ["click", "follow", "share", "comment"])):
+                            
+                            # Clean the title (remove bullets, dates, and extra metadata)
+                            clean_title = re.split(r'–| - |\.| on ', text)[0].replace("•", "").strip()
+                            
+                            if len(clean_title) > 2:
+                                found_games.append({
+                                    "title": clean_title,
+                                    "image": "https://luna.amazon.com/favicon.ico"
+                                })
 
-                        if 3 < len(title) < 50:
-                            found_games.append({
-                                "title": title,
-                                "image": "https://luna.amazon.com/favicon.ico"
-                            })
-
-                    # DEDUPLICATE
-                    unique_list = list({v['title']:v for v in found_games}.values())
+                    # Deduplicate the list
+                    unique_games = []
+                    seen = set()
+                    for g in found_games:
+                        if g['title'] not in seen:
+                            unique_games.append(g)
+                            seen.add(g['title'])
                     
-                    if not unique_list:
-                        _LOGGER.warning("Luna Scraper: Page loaded but no games found. Website structure may have changed.")
-                    
-                    return unique_list
+                    return unique_games
 
         except Exception as e:
-            _LOGGER.error("Luna Scraper Critical Error: %s", e)
-            raise UpdateFailed(f"Error: {e}")
+            raise UpdateFailed(f"Scraper error: {e}")
 
     coordinator = DataUpdateCoordinator(
         hass,
@@ -80,7 +76,7 @@ class LunaGamesSensor(SensorEntity):
     def __init__(self, coordinator):
         self.coordinator = coordinator
         self._attr_name = "Amazon Luna Free Games"
-        self._attr_unique_id = "amazon_luna_free_games_list_v3" # New ID to force refresh
+        self._attr_unique_id = "amazon_luna_free_games_v4"
 
     @property
     def native_value(self):
@@ -93,10 +89,3 @@ class LunaGamesSensor(SensorEntity):
     @property
     def icon(self):
         return "mdi:controller-classic"
-
-    @property
-    def should_poll(self):
-        return False
-
-    async def async_added_to_hass(self):
-        self.async_on_remove(self.coordinator.async_add_listener(self.async_write_ha_state))
