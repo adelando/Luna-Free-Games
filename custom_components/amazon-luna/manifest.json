@@ -1,7 +1,7 @@
 {
   "domain": "amazon_luna",
   "name": "Amazon Luna Free Games",
-  "version": "0.1.6.2",
+  "version": "0.1.6.3",
   "config_flow": true,
   "documentation": "https://github.com/adelando/luna-free-games",
   "issue_tracker": "https://github.com/adelando/luna-free-games/issues",
