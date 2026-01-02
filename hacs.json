@@ -1,4 +1,7 @@
 {
   "name": "Amazon Luna Free Games",
-  "render_readme": true
+  "render_readme": true,
+  "images": [
+    "/images/screenshot.png"
+  ]
 }
