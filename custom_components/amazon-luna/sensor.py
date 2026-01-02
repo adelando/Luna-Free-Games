@@ -14,57 +14,50 @@ async def async_setup_entry(hass, entry, async_add_entities):
     
     async def async_get_data():
         try:
-            # Amazon checks User-Agents strictly. This mimics a modern Chrome browser.
+            # We must use a precise User-Agent so Amazon doesn't serve an empty page
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
             }
             async with aiohttp.ClientSession() as session:
                 async with session.get(SOURCE_URL, headers=headers, timeout=20) as response:
                     if response.status != 200:
-                        raise UpdateFailed(f"Amazon returned status {response.status}")
+                        raise UpdateFailed(f"Amazon error: {response.status}")
                     
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
                     found_games = []
 
-                    # STRATEGY: Amazon uses 'aria-label' for their claim buttons.
-                    # We look for any element that has an aria-label containing 'Claim'
+                    # Search through every element with an aria-label
+                    # Amazon titles usually follow "Claim [Game Name]"
                     for el in soup.find_all(attrs={"aria-label": True}):
                         label = el['aria-label']
-                        
-                        if "Claim " in label:
-                            # Extract game name: "Claim Fallout 3" -> "Fallout 3"
-                            game_title = label.replace("Claim ", "").strip()
-                            
-                            if 2 < len(game_title) < 60:
-                                found_games.append({
-                                    "title": game_title,
-                                    "image": "https://luna.amazon.com/favicon.ico"
-                                })
+                        if "Claim " in label and len(label) < 60:
+                            game_name = label.replace("Claim ", "").strip()
+                            found_games.append({
+                                "title": game_name,
+                                "image": "https://luna.amazon.com/favicon.ico"
+                            })
 
-                    # FALLBACK: If labels fail, look for specific text patterns
+                    # Fallback: Scrape for titles in common containers
                     if not found_games:
-                        for span in soup.find_all('span'):
+                        for span in soup.find_all(['span', 'div', 'p']):
                             text = span.get_text().strip()
-                            # Look for capitalized titles that aren't UI buttons
                             if 3 < len(text) < 40 and text[0].isupper():
+                                # Filter UI noise
                                 if text not in ["Home", "Settings", "Library", "Play", "Sign In"]:
                                     found_games.append({"title": text, "image": "https://luna.amazon.com/favicon.ico"})
 
                     # Deduplicate
-                    unique_games = list({v['title']:v for v in found_games}.values())
-                    _LOGGER.debug("Luna Scraper found %s games", len(unique_games))
-                    return unique_games
+                    return list({v['title']:v for v in found_games}.values())
 
         except Exception as e:
-            _LOGGER.error("Luna Scraper Error: %s", e)
-            raise UpdateFailed(f"Error fetching Luna data: {e}")
+            _LOGGER.error("Luna Scraper failed: %s", e)
+            raise UpdateFailed(f"Could not reach Luna: {e}")
 
     coordinator = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name="Luna Games",
+        hass, _LOGGER, name="Luna Claims",
         update_method=async_get_data,
         update_interval=timedelta(hours=12),
     )
@@ -76,7 +69,7 @@ class LunaGamesSensor(SensorEntity):
     def __init__(self, coordinator):
         self.coordinator = coordinator
         self._attr_name = "Amazon Luna Free Games"
-        self._attr_unique_id = "amazon_luna_claims_v5"
+        self._attr_unique_id = "luna_claims_v6"
 
     @property
     def native_value(self):
@@ -88,7 +81,7 @@ class LunaGamesSensor(SensorEntity):
 
     @property
     def icon(self):
-        return "mdi:amazon-alexa"
+        return "mdi:amazon"
 
     @property
     def should_poll(self):
